@@ -106,20 +106,3 @@ When you upload a JSON file:
   notes, severity-banded finding counts, and a per-resource table.
 
 ---
-
-## Roadmap (post-Part 2)
-
-- Replace `simulate_*` cloud audits with real `boto3` / Azure SDK / GCP SDK
-  calls and add credential management.
-- Persist uploaded reports server-side and add a real "Previously Scanned
-  Files" backend.
-- Wire the AI Assistant on the Script page to a real LLM endpoint that emits
-  cloud-provider-specific audit code.
-- Add CIS Docker Benchmark coverage to the local Docker audit.
-
----
-
-## License
-
-Course project, no formal license. Do not deploy to production without
-review.
