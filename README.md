@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # ContainerGuard
 
 **Unified Container & VM Security Misconfiguration Scanner**
@@ -106,3 +107,7 @@ When you upload a JSON file:
   notes, severity-banded finding counts, and a per-resource table.
 
 ---
+=======
+# Container-Guard
+>>>>>>> 1fd866d7bac8c1ba0fd070b905223f678746dca8
+# Container-Guard
