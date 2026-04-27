@@ -60,44 +60,7 @@ python3 scripts/scanner.py -o report.json --pretty
 # 4. Open the dashboard, go to "Upload JSON", drop in report.json.
 ```
 
-The dashboard ships with realistic default data so you can demo it without
-running the scanner first.
-
 ---
-
-## Project layout
-
-```
-.
-├── README.md                       # this file
-├── DEMO_SCRIPT.md                  # live-demo runbook
-├── package.json                    # UI deps (Vite + React + Tailwind v4)
-├── vite.config.ts
-├── index.html
-├── scripts/
-│   ├── scanner.py                  # Python scanner (tool code)
-│   └── README.md                   # scanner usage + JSON schema
-└── src/
-    ├── main.tsx
-    ├── styles/                     # Tailwind + theme
-    └── app/
-        ├── App.tsx                 # all five UI pages
-        └── components/
-            ├── VMShieldLogo.tsx
-            └── ui/                 # shadcn/ui components
-```
-
----
-
-## What the dashboard does
-
-| Page          | What it does                                                         |
-|---------------|----------------------------------------------------------------------|
-| Dashboard     | Lists generated audit scripts (provider-tagged) with edit / download / delete actions. |
-| Script        | In-app Python editor with an AI assistant that patches the code in place (logging, error handling, psutil monitoring, S3 upload, Slack webhook, etc.). |
-| Upload JSON   | Accepts a `report.json` from `scanner.py` (drag-drop or browse) and validates the schema. |
-| Reports       | Summary cards + paginated script-execution-history table driven by the JSON. |
-| Settings      | Org name, default operator, severity threshold, Slack webhook, auto-export toggle. |
 
 When you upload a JSON file:
 
