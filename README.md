@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # ContainerGuard
 
 **Unified Container & VM Security Misconfiguration Scanner**
@@ -40,7 +39,9 @@ Two pieces:
 2. **Dashboard** (this Vite app) — five-page React UI: Dashboard, Script
    editor, Upload JSON, Reports, Settings. The **Upload JSON** page accepts
    the scanner's output and drives the **Reports** page, including summary
-   stats, the script-execution-history table, and per-scan detail modals.
+   stats, the script-execution-history table, and per-scan detail modals
+   with a full findings drill-down (severity, resource, description,
+   remediation, CIS reference where applicable).
 
 ---
 
@@ -69,6 +70,7 @@ running the scanner first.
 ```
 .
 ├── README.md                       # this file
+├── DEMO_SCRIPT.md                  # live-demo runbook
 ├── package.json                    # UI deps (Vite + React + Tailwind v4)
 ├── vite.config.ts
 ├── index.html
@@ -91,23 +93,35 @@ running the scanner first.
 
 | Page          | What it does                                                         |
 |---------------|----------------------------------------------------------------------|
-| Dashboard     | Lists previously generated audit scripts and lets you create new ones. |
-| Script        | In-app editor for the generated Python script with an AI assistant pane. |
-| Upload JSON   | Accepts a `report.json` from `scanner.py` (drag-drop or browse).      |
-| Reports       | Summary cards + script-execution-history table driven by the JSON.    |
-| Settings      | Placeholder.                                                          |
+| Dashboard     | Lists generated audit scripts (provider-tagged) with edit / download / delete actions. |
+| Script        | In-app Python editor with an AI assistant that patches the code in place (logging, error handling, psutil monitoring, S3 upload, Slack webhook, etc.). |
+| Upload JSON   | Accepts a `report.json` from `scanner.py` (drag-drop or browse) and validates the schema. |
+| Reports       | Summary cards + paginated script-execution-history table driven by the JSON. |
+| Settings      | Org name, default operator, severity threshold, Slack webhook, auto-export toggle. |
 
 When you upload a JSON file:
 
 - Validation: must have `summary.total_scans_run` (number) and
   `script_execution_history` (array). Invalid files surface an inline error.
 - The Reports page repopulates: total scans, total VMs scanned, total
-  findings, and one row per scan in the history table.
+  findings, and one row per scan in the history table (paginated, 10/page).
 - Clicking **View** on a row opens a modal with run metadata, the operator's
-  notes, severity-banded finding counts, and a per-resource table.
+  notes, severity-banded finding counts, a per-resource table, and a full
+  per-finding drill-down (severity, resource path, description,
+  remediation, CIS reference where applicable).
 
 ---
-=======
-# Container-Guard
->>>>>>> 1fd866d7bac8c1ba0fd070b905223f678746dca8
-# Container-Guard
+
+## Provider templates
+
+The Script page generates runnable Python audit templates for each provider:
+
+| Provider | SDK used                                                  |
+|----------|-----------------------------------------------------------|
+| AWS      | `boto3` — IMDSv1, missing tags, SG overexposure           |
+| Azure    | `azure-mgmt-compute`, `azure-mgmt-network` — NSG rules, disk encryption |
+| GCP      | `google-cloud-compute` — OS Login, Shielded VM, external IPs |
+| Docker   | `docker-py` — privileged, socket bind, root user (CIS 4.1, 5.4, 5.31) |
+
+Each template ships with a graceful fallback if the SDK isn't installed and
+emits JSON in the same schema the dashboard consumes.

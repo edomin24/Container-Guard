@@ -84,6 +84,7 @@ def docker_audit() -> dict[str, Any]:
     """Inspect local Docker for privileged + socket-exposing containers."""
     findings = {"critical": 0, "high": 0, "medium": 0, "low": 0, "total": 0}
     collected: list[dict[str, Any]] = []
+    findings_list: list[dict[str, Any]] = []
 
     if not have("docker"):
         return _empty_scan(
@@ -127,12 +128,36 @@ def docker_audit() -> dict[str, Any]:
         if privileged:
             findings["critical"] += 1
             local_findings += 1
+            findings_list.append({
+                "severity": "Critical",
+                "title": "Privileged container",
+                "resource": f"docker://{name}",
+                "description": "Container runs with --privileged; container escape is straightforward.",
+                "remediation": "Remove --privileged; grant only the specific capabilities the workload needs.",
+                "cis_ref": "CIS Docker 5.4",
+            })
         if socket_exposed:
             findings["critical"] += 1
             local_findings += 1
+            findings_list.append({
+                "severity": "Critical",
+                "title": "Docker socket bind mount",
+                "resource": f"docker://{name}",
+                "description": "/var/run/docker.sock mounted into container — equivalent to host root.",
+                "remediation": "Use a rootless build agent (kaniko, buildkit-rootless) instead.",
+                "cis_ref": "CIS Docker 5.31",
+            })
         if run_as_root:
             findings["medium"] += 1
             local_findings += 1
+            findings_list.append({
+                "severity": "Medium",
+                "title": "Container running as root",
+                "resource": f"docker://{name}",
+                "description": "Container processes run as UID 0; reduces defense in depth.",
+                "remediation": "Add a USER directive in the Dockerfile pinning a non-root UID.",
+                "cis_ref": "CIS Docker 4.1",
+            })
 
         collected.append({
             "instance_id": cid[:12],
@@ -162,6 +187,7 @@ def docker_audit() -> dict[str, Any]:
         ),
         "findings_summary": findings,
         "collected_data": collected,
+        "findings": findings_list,
     }
 
 
@@ -171,6 +197,7 @@ def docker_audit() -> dict[str, Any]:
 
 def host_audit() -> dict[str, Any]:
     findings = {"critical": 0, "high": 0, "medium": 0, "low": 0, "total": 0}
+    findings_list: list[dict[str, Any]] = []
     notes_parts: list[str] = []
 
     # SSH config check.
@@ -182,9 +209,23 @@ def host_audit() -> dict[str, Any]:
             if "permitrootlogin yes" in cfg:
                 findings["high"] += 1
                 notes_parts.append("PermitRootLogin yes detected in sshd_config")
+                findings_list.append({
+                    "severity": "High",
+                    "title": "SSH permits root login",
+                    "resource": sshd_path,
+                    "description": "Direct root login over SSH is permitted.",
+                    "remediation": "Set PermitRootLogin no and reload sshd.",
+                })
             if "passwordauthentication yes" in cfg:
                 findings["medium"] += 1
                 notes_parts.append("PasswordAuthentication yes detected in sshd_config")
+                findings_list.append({
+                    "severity": "Medium",
+                    "title": "SSH allows password authentication",
+                    "resource": sshd_path,
+                    "description": "Password auth is enabled; brute-force risk.",
+                    "remediation": "Set PasswordAuthentication no and require keys.",
+                })
         except PermissionError:
             notes_parts.append("sshd_config not readable; skipped")
     else:
@@ -209,6 +250,13 @@ def host_audit() -> dict[str, Any]:
         if port in listening:
             findings["medium"] += 1
             notes_parts.append(f"Sensitive service listening on port {port} ({label})")
+            findings_list.append({
+                "severity": "Medium",
+                "title": f"Sensitive port listening: {port}/{label}",
+                "resource": f"localhost:{port}",
+                "description": f"{label.upper()} service is bound and accepting connections.",
+                "remediation": "Restrict via host firewall or bind to a private interface.",
+            })
 
     findings["total"] = sum(findings[k] for k in ("critical", "high", "medium", "low"))
 
@@ -233,6 +281,7 @@ def host_audit() -> dict[str, Any]:
             "state": "running",
             "findings_count": findings["total"],
         }],
+        "findings": findings_list,
     }
 
 
@@ -241,6 +290,36 @@ def host_audit() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def simulate_aws() -> dict[str, Any]:
+    findings_list = [
+        {"severity": "Critical", "title": "Security group allows 0.0.0.0/0 on port 22",
+         "resource": "sg-0fa1b2c3 (prod-db-01)",
+         "description": "SSH (TCP/22) is open to the internet on the database tier.",
+         "remediation": "Restrict ingress to bastion CIDR or replace with SSM Session Manager."},
+        {"severity": "Critical", "title": "EBS volume unencrypted",
+         "resource": "vol-0c4d5e6f (prod-db-01)",
+         "description": "Root volume is not encrypted at rest.",
+         "remediation": "Snapshot, copy with encryption enabled, then restore."},
+        {"severity": "Critical", "title": "Instance profile with AdministratorAccess",
+         "resource": "i-0c7d2e8b1a094e21f",
+         "description": "Compromise of this instance grants full account access via IMDS.",
+         "remediation": "Replace with least-privilege role scoped to needed APIs."},
+        {"severity": "High", "title": "IMDSv1 still enabled",
+         "resource": "i-0a3f4d8c9b2e1f0a4",
+         "description": "Legacy metadata service is vulnerable to SSRF-based credential theft.",
+         "remediation": "Set HttpTokens=required on MetadataOptions."},
+        {"severity": "High", "title": "Public IP on database instance",
+         "resource": "i-0c7d2e8b1a094e21f",
+         "description": "Database tier has a publicly routable IP.",
+         "remediation": "Move to private subnet; expose only via internal load balancer."},
+        {"severity": "Medium", "title": "Missing tag: Owner",
+         "resource": "i-0f81e09a4b6c2a39d",
+         "description": "Instance lacks the Owner tag required by tagging policy.",
+         "remediation": "Apply Owner=<team-name> tag."},
+        {"severity": "Low", "title": "Old AMI in use",
+         "resource": "i-0a3f4d8c9b2e1f0a4",
+         "description": "AMI is older than 90 days; missing kernel patches.",
+         "remediation": "Rebake from latest hardened AMI."},
+    ]
     return {
         "id": f"scan-{today_iso()}-aws",
         "script_name": "AWS EC2 Misconfig Audit",
@@ -255,7 +334,7 @@ def simulate_aws() -> dict[str, Any]:
             "Audited security groups, IAM instance profiles, IMDSv1 usage, "
             "and unencrypted EBS volumes across 87 EC2 instances."
         ),
-        "findings_summary": {"total": 14, "critical": 3, "high": 5, "medium": 4, "low": 2},
+        "findings_summary": _summary_from_findings(findings_list),
         "collected_data": [
             {"instance_id": "i-0a3f4d8c9b2e1f0a4", "name": "prod-web-01",
              "type": "t3.medium", "region": "us-east-1", "state": "running", "findings_count": 0},
@@ -266,10 +345,33 @@ def simulate_aws() -> dict[str, Any]:
             {"instance_id": "i-0f81e09a4b6c2a39d", "name": "dev-bastion",
              "type": "t3.micro", "region": "us-west-2", "state": "stopped", "findings_count": 3},
         ],
+        "findings": findings_list,
     }
 
 
 def simulate_azure() -> dict[str, Any]:
+    findings_list = [
+        {"severity": "Critical", "title": "NSG allows RDP (3389) from Internet",
+         "resource": "nsg-prod-app-eastus",
+         "description": "Inbound rule permits TCP/3389 from source 'Internet'.",
+         "remediation": "Restrict to corporate Bastion IP range or use Azure Bastion."},
+        {"severity": "High", "title": "OS disk encryption disabled",
+         "resource": "vm-prod-app-02",
+         "description": "Azure Disk Encryption is not enabled on the OS disk.",
+         "remediation": "Enable ADE with a Key Vault-stored KEK."},
+        {"severity": "High", "title": "Defender for Cloud agent missing",
+         "resource": "vm-prod-app-02",
+         "description": "No Defender agent — runtime threats invisible.",
+         "remediation": "Auto-provision the MDC agent across the subscription."},
+        {"severity": "Medium", "title": "JIT VM access not enabled",
+         "resource": "vm-prod-app-01",
+         "description": "Management ports always open instead of just-in-time.",
+         "remediation": "Enable JIT in Defender for Cloud."},
+        {"severity": "Low", "title": "VM backup not enabled",
+         "resource": "vm-prod-app-02",
+         "description": "No Azure Backup recovery point.",
+         "remediation": "Add to Recovery Services vault policy."},
+    ]
     return {
         "id": f"scan-{today_iso()}-azure",
         "script_name": "Azure VM Hardening Check",
@@ -284,17 +386,40 @@ def simulate_azure() -> dict[str, Any]:
             "Hardening check across 3 resource groups. Validated NSG rules, "
             "JIT VM access, disk encryption, and Defender for Cloud agent presence."
         ),
-        "findings_summary": {"total": 9, "critical": 1, "high": 3, "medium": 4, "low": 1},
+        "findings_summary": _summary_from_findings(findings_list),
         "collected_data": [
             {"instance_id": "/subscriptions/8c2a/.../vm-prod-app-01", "name": "vm-prod-app-01",
              "type": "Standard_D4s_v5", "region": "eastus", "state": "running", "findings_count": 1},
             {"instance_id": "/subscriptions/8c2a/.../vm-prod-app-02", "name": "vm-prod-app-02",
              "type": "Standard_D4s_v5", "region": "eastus", "state": "running", "findings_count": 4},
         ],
+        "findings": findings_list,
     }
 
 
 def simulate_gcp() -> dict[str, Any]:
+    findings_list = [
+        {"severity": "Critical", "title": "External IP attached to GKE node",
+         "resource": "gke-prod-pool-01-abc",
+         "description": "GKE node has a public IP, expanding the attack surface.",
+         "remediation": "Use private GKE clusters with Cloud NAT for egress."},
+        {"severity": "High", "title": "OS Login disabled at project level",
+         "resource": "project: netneko-prod",
+         "description": "SSH key management falls back to instance-level metadata.",
+         "remediation": "Set enable-oslogin=TRUE in project metadata."},
+        {"severity": "High", "title": "Shielded VM (Secure Boot) disabled",
+         "resource": "gke-prod-pool-01-abc",
+         "description": "Boot integrity not measured — rootkit risk.",
+         "remediation": "Recreate node pool with shielded VM enabled."},
+        {"severity": "Medium", "title": "Default service account used",
+         "resource": "gke-prod-pool-01-abc",
+         "description": "Default SA has broad scopes by default.",
+         "remediation": "Bind a dedicated service account with minimal IAM roles."},
+        {"severity": "Low", "title": "Auto-upgrade disabled on node pool",
+         "resource": "gke-prod-pool-01",
+         "description": "Node pool will not receive security patches automatically.",
+         "remediation": "Enable auto-upgrade in node pool config."},
+    ]
     return {
         "id": f"scan-{today_iso()}-gcp",
         "script_name": "GCP Instance Security Scanner",
@@ -310,17 +435,28 @@ def simulate_gcp() -> dict[str, Any]:
             "skipped. Other projects scanned — checked OS Login enforcement, "
             "shielded VM status, and external IP exposure."
         ),
-        "findings_summary": {"total": 6, "critical": 1, "high": 2, "medium": 2, "low": 1},
+        "findings_summary": _summary_from_findings(findings_list),
         "collected_data": [
             {"instance_id": "1234567890123456789", "name": "gke-prod-pool-01-abc",
              "type": "n2-standard-4", "region": "us-central1", "state": "running", "findings_count": 2},
         ],
+        "findings": findings_list,
     }
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _summary_from_findings(findings: list[dict[str, Any]]) -> dict[str, int]:
+    counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+    for f in findings:
+        sev = (f.get("severity") or "").lower()
+        if sev in counts:
+            counts[sev] += 1
+    counts["total"] = sum(counts.values())
+    return counts
+
 
 def _empty_scan(scan_id: str, script_name: str, provider: str,
                 note: str, status: str) -> dict[str, Any]:
@@ -337,6 +473,7 @@ def _empty_scan(scan_id: str, script_name: str, provider: str,
         "notes": note,
         "findings_summary": {"total": 0, "critical": 0, "high": 0, "medium": 0, "low": 0},
         "collected_data": [],
+        "findings": [],
     }
 
 
