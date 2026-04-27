@@ -760,108 +760,115 @@ if __name__ == "__main__":
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   };
 
-  const validateReport = (obj: any) => {
-
-    // Accept normal ContainerGuard JSON reports
+  // Returns 'full' for a complete ContainerGuard report, 'single' for a
+  // standalone scan record (one of the generated provider templates emits
+  // this shape), or null if the JSON doesn't look like either.
+  const classifyReport = (obj: any): 'full' | 'single' | null => {
+    if (!obj || typeof obj !== 'object') return null;
     if (
-      obj &&
-      typeof obj === 'object' &&
       obj.summary &&
+      typeof obj.summary.total_scans_run === 'number' &&
       Array.isArray(obj.script_execution_history)
     ) {
-      return true;
+      return 'full';
     }
-
-    // Accept uploaded Python scan output
-    if (
-      obj &&
-      typeof obj === 'object' &&
-      obj.script_name &&
-      obj.cloud_provider &&
-      obj.findings_summary
-    ) {
-      return true;
+    if (obj.script_name && obj.cloud_provider && obj.findings_summary) {
+      return 'single';
     }
+    return null;
+  };
 
-    return false;
+  // Look at the filename for a hint about which provider this script targets.
+  // Falls back to Docker so we always have a valid CloudProvider.
+  const inferProviderFromFilename = (name: string): CloudProvider => {
+    const lower = name.toLowerCase();
+    if (/(^|[^a-z])aws([^a-z]|$)|ec2|boto3/.test(lower)) return 'AWS';
+    if (/azure|nsg/.test(lower)) return 'Azure';
+    if (/(^|[^a-z])gcp([^a-z]|$)|gce|compute/.test(lower)) return 'GCP';
+    return 'Docker';
   };
 
   const handleFileUpload = (file: File) => {
     setUploadError(null);
     const reader = new FileReader();
     reader.onload = (e) => {
-    try {
       const fileContent = String(e.target?.result ?? '');
-      
-      // Handle Python files
+
+      // ---- Python script upload: load it into the editor ----
       if (file.name.endsWith('.py')) {
         const pythonScriptName = file.name.replace(/\.py$/, '');
+        const provider = inferProviderFromFilename(pythonScriptName);
         const newScript: Script = {
           id: Date.now().toString(),
           name: pythonScriptName,
           dateCreated: getCurrentDate(),
           status: 'Ready',
-          cloudProvider: 'Docker', // Default to Docker for uploaded scripts
+          cloudProvider: provider,
           code: fileContent,
         };
         setScripts([newScript, ...scripts]);
         setEditingScriptId(newScript.id);
         setScriptCode(fileContent);
-        setCurrentScript({
-          name: pythonScriptName,
-          date: getCurrentDate(),
-        });
-        setSelectedProvider('Docker');
+        setCurrentScript({ name: pythonScriptName, date: getCurrentDate() });
+        setSelectedProvider(provider);
         setActiveNav('Script');
         return;
       }
-      
-      // Handle JSON files
-      let parsed = JSON.parse(fileContent);
 
-      if (!validateReport(parsed)) {
-        setUploadError('Invalid format');
+      // ---- JSON report upload ----
+      let parsed: any;
+      try {
+        parsed = JSON.parse(fileContent);
+      } catch (err) {
+        setUploadError(
+          `Failed to parse JSON: ${err instanceof Error ? err.message : 'unknown error'}`
+        );
         return;
       }
 
-      /* If user uploaded a single Python script scan,
-      convert it into full dashboard report format */
-      if (!parsed.summary && parsed.script_name) {
+      const kind = classifyReport(parsed);
+      if (!kind) {
+        setUploadError(
+          'Invalid format: expected either a full ContainerGuard report ' +
+          '(with summary + script_execution_history) or a single scan record.'
+        );
+        return;
+      }
 
+      // Wrap a single-scan record into the full report shape so the rest of
+      // the dashboard can treat it uniformly.
+      if (kind === 'single') {
+        const fs = parsed.findings_summary ?? {};
         parsed = {
-            summary: {
-              total_scans_run: 1,
-              total_vms_scanned: parsed.vms_scanned || 1,
-              total_findings: parsed.findings_summary.total || 0,
-              findings_by_severity: {
-                  critical: parsed.findings_summary.critical || 0,
-                  high: parsed.findings_summary.high || 0,
-                  medium: parsed.findings_summary.medium || 0,
-                  low: parsed.findings_summary.low || 0
-               } 
+          summary: {
+            total_scans_run: 1,
+            total_vms_scanned: parsed.vms_scanned || 1,
+            total_findings: fs.total || 0,
+            findings_by_severity: {
+              critical: fs.critical || 0,
+              high: fs.high || 0,
+              medium: fs.medium || 0,
+              low: fs.low || 0,
             },
-
-            script_execution_history: [parsed]
+          },
+          script_execution_history: [parsed],
         };
       }
 
-        setReportData(parsed);
-        setCurrentPage(1);
-        setUploadedJSONs((prev: UploadedJSON[]) => [
-          {
-            id: Date.now().toString(),
-            fileName: file.name,
-            uploadDate: getCurrentDate(),
-            fileSize: formatFileSize(file.size),
-            status: 'Scanned',
-            data: parsed,
-          },
-          ...prev,
-        ]);
-        setActiveNav('Reports');
-      } catch (err) {
-        setUploadError(`Failed to parse file: ${err instanceof Error ? err.message : 'unknown error'}`);
-      }
+      setReportData(parsed);
+      setCurrentPage(1);
+      setUploadedJSONs((prev) => [
+        {
+          id: Date.now().toString(),
+          fileName: file.name,
+          uploadDate: getCurrentDate(),
+          fileSize: formatFileSize(file.size),
+          status: 'Scanned',
+          data: parsed,
+        },
+        ...prev,
+      ]);
+      setActiveNav('Reports');
     };
     reader.onerror = () => setUploadError('Could not read file');
     reader.readAsText(file);
@@ -890,7 +897,7 @@ if __name__ == "__main__":
 
   const handleDeleteScript = (id: string) => {
     if (!confirm('Delete this script? This cannot be undone.')) return;
-    setScripts((prev: Script[]) => prev.filter((s: Script) => s.id !== id));
+    setScripts((prev) => prev.filter((s) => s.id !== id));
     if (editingScriptId === id) {
       setEditingScriptId(null);
       setCurrentScript(null);
@@ -926,7 +933,7 @@ if __name__ == "__main__":
 
   const handleDeleteUploadedJSON = (id: string) => {
     if (!confirm('Remove this file from the list?')) return;
-    setUploadedJSONs((prev: UploadedJSON[]) => prev.filter((j: UploadedJSON) => j.id !== id));
+    setUploadedJSONs((prev) => prev.filter((j) => j.id !== id));
   };
 
   // ---- Reports handlers ----
@@ -956,7 +963,7 @@ if __name__ == "__main__":
 
   const handleCreateScript = () => {
     if (scriptName.trim()) {
-      const template = SCRIPT_TEMPLATES[selectedProvider as CloudProvider];
+      const template = SCRIPT_TEMPLATES[selectedProvider];
       const newScript: Script = {
         id: Date.now().toString(),
         name: scriptName,
@@ -1139,7 +1146,7 @@ log = logging.getLogger("containerguard")`);
   const handleSendMessage = () => {
     if (!chatInput.trim()) return;
     const request = chatInput;
-    setChatMessages((prev: ChatMessage[]) => [...prev, { role: 'user', content: request }]);
+    setChatMessages((prev) => [...prev, { role: 'user', content: request }]);
     setChatInput('');
 
     const result = applyAssistantPatch(request, scriptCode);
@@ -1147,13 +1154,13 @@ log = logging.getLogger("containerguard")`);
       setScriptCode(result.code);
       // sync back to the script in the list so re-opening it sees the patch
       if (editingScriptId) {
-        setScripts((prev: Script[]) =>
-          prev.map((s: Script) => (s.id === editingScriptId ? { ...s, code: result.code } : s))
+        setScripts((prev) =>
+          prev.map((s) => (s.id === editingScriptId ? { ...s, code: result.code } : s))
         );
       }
     }
     setTimeout(() => {
-      setChatMessages((prev: ChatMessage[]) => [...prev, { role: 'assistant', content: result.reply }]);
+      setChatMessages((prev) => [...prev, { role: 'assistant', content: result.reply }]);
     }, 250);
   };
 
@@ -1186,7 +1193,7 @@ log = logging.getLogger("containerguard")`);
     URL.revokeObjectURL(url);
 
     // Update script status to "Ready"
-    setScripts(scripts.map((script: Script) =>
+    setScripts(scripts.map(script =>
       script.name === currentScript.name
         ? { ...script, status: 'Ready' }
         : script
