@@ -760,29 +760,94 @@ if __name__ == "__main__":
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   };
 
-  const validateReport = (obj: any): obj is RawReportData => {
-    return (
+  const validateReport = (obj: any) => {
+
+    // Accept normal ContainerGuard JSON reports
+    if (
       obj &&
       typeof obj === 'object' &&
       obj.summary &&
-      typeof obj.summary.total_scans_run === 'number' &&
       Array.isArray(obj.script_execution_history)
-    );
+    ) {
+      return true;
+    }
+
+    // Accept uploaded Python scan output
+    if (
+      obj &&
+      typeof obj === 'object' &&
+      obj.script_name &&
+      obj.cloud_provider &&
+      obj.findings_summary
+    ) {
+      return true;
+    }
+
+    return false;
   };
 
   const handleFileUpload = (file: File) => {
     setUploadError(null);
     const reader = new FileReader();
     reader.onload = (e) => {
-      try {
-        const parsed = JSON.parse(String(e.target?.result ?? ''));
-        if (!validateReport(parsed)) {
-          setUploadError('Invalid format: missing summary or script_execution_history');
-          return;
-        }
+    try {
+      const fileContent = String(e.target?.result ?? '');
+      
+      // Handle Python files
+      if (file.name.endsWith('.py')) {
+        const pythonScriptName = file.name.replace(/\.py$/, '');
+        const newScript: Script = {
+          id: Date.now().toString(),
+          name: pythonScriptName,
+          dateCreated: getCurrentDate(),
+          status: 'Ready',
+          cloudProvider: 'Docker', // Default to Docker for uploaded scripts
+          code: fileContent,
+        };
+        setScripts([newScript, ...scripts]);
+        setEditingScriptId(newScript.id);
+        setScriptCode(fileContent);
+        setCurrentScript({
+          name: pythonScriptName,
+          date: getCurrentDate(),
+        });
+        setSelectedProvider('Docker');
+        setActiveNav('Script');
+        return;
+      }
+      
+      // Handle JSON files
+      let parsed = JSON.parse(fileContent);
+
+      if (!validateReport(parsed)) {
+        setUploadError('Invalid format');
+        return;
+      }
+
+      /* If user uploaded a single Python script scan,
+      convert it into full dashboard report format */
+      if (!parsed.summary && parsed.script_name) {
+
+        parsed = {
+            summary: {
+              total_scans_run: 1,
+              total_vms_scanned: parsed.vms_scanned || 1,
+              total_findings: parsed.findings_summary.total || 0,
+              findings_by_severity: {
+                  critical: parsed.findings_summary.critical || 0,
+                  high: parsed.findings_summary.high || 0,
+                  medium: parsed.findings_summary.medium || 0,
+                  low: parsed.findings_summary.low || 0
+               } 
+            },
+
+            script_execution_history: [parsed]
+        };
+      }
+
         setReportData(parsed);
         setCurrentPage(1);
-        setUploadedJSONs((prev) => [
+        setUploadedJSONs((prev: UploadedJSON[]) => [
           {
             id: Date.now().toString(),
             fileName: file.name,
@@ -795,7 +860,7 @@ if __name__ == "__main__":
         ]);
         setActiveNav('Reports');
       } catch (err) {
-        setUploadError(`Failed to parse JSON: ${err instanceof Error ? err.message : 'unknown error'}`);
+        setUploadError(`Failed to parse file: ${err instanceof Error ? err.message : 'unknown error'}`);
       }
     };
     reader.onerror = () => setUploadError('Could not read file');
@@ -825,7 +890,7 @@ if __name__ == "__main__":
 
   const handleDeleteScript = (id: string) => {
     if (!confirm('Delete this script? This cannot be undone.')) return;
-    setScripts((prev) => prev.filter((s) => s.id !== id));
+    setScripts((prev: Script[]) => prev.filter((s: Script) => s.id !== id));
     if (editingScriptId === id) {
       setEditingScriptId(null);
       setCurrentScript(null);
@@ -861,7 +926,7 @@ if __name__ == "__main__":
 
   const handleDeleteUploadedJSON = (id: string) => {
     if (!confirm('Remove this file from the list?')) return;
-    setUploadedJSONs((prev) => prev.filter((j) => j.id !== id));
+    setUploadedJSONs((prev: UploadedJSON[]) => prev.filter((j: UploadedJSON) => j.id !== id));
   };
 
   // ---- Reports handlers ----
@@ -891,7 +956,7 @@ if __name__ == "__main__":
 
   const handleCreateScript = () => {
     if (scriptName.trim()) {
-      const template = SCRIPT_TEMPLATES[selectedProvider];
+      const template = SCRIPT_TEMPLATES[selectedProvider as CloudProvider];
       const newScript: Script = {
         id: Date.now().toString(),
         name: scriptName,
@@ -1074,7 +1139,7 @@ log = logging.getLogger("containerguard")`);
   const handleSendMessage = () => {
     if (!chatInput.trim()) return;
     const request = chatInput;
-    setChatMessages((prev) => [...prev, { role: 'user', content: request }]);
+    setChatMessages((prev: ChatMessage[]) => [...prev, { role: 'user', content: request }]);
     setChatInput('');
 
     const result = applyAssistantPatch(request, scriptCode);
@@ -1082,13 +1147,13 @@ log = logging.getLogger("containerguard")`);
       setScriptCode(result.code);
       // sync back to the script in the list so re-opening it sees the patch
       if (editingScriptId) {
-        setScripts((prev) =>
-          prev.map((s) => (s.id === editingScriptId ? { ...s, code: result.code } : s))
+        setScripts((prev: Script[]) =>
+          prev.map((s: Script) => (s.id === editingScriptId ? { ...s, code: result.code } : s))
         );
       }
     }
     setTimeout(() => {
-      setChatMessages((prev) => [...prev, { role: 'assistant', content: result.reply }]);
+      setChatMessages((prev: ChatMessage[]) => [...prev, { role: 'assistant', content: result.reply }]);
     }, 250);
   };
 
@@ -1121,7 +1186,7 @@ log = logging.getLogger("containerguard")`);
     URL.revokeObjectURL(url);
 
     // Update script status to "Ready"
-    setScripts(scripts.map(script =>
+    setScripts(scripts.map((script: Script) =>
       script.name === currentScript.name
         ? { ...script, status: 'Ready' }
         : script
@@ -1480,7 +1545,7 @@ log = logging.getLogger("containerguard")`);
             <div className="flex-1 overflow-auto p-8">
               {/* Upload Section */}
               <div className="bg-[#1A1F2B] border border-[#2A2F3A] rounded-lg p-8 mb-8">
-                <h3 className="text-white mb-4">Upload JSON File</h3>
+                <h3 className="text-white mb-4">Upload JSON or Python Script</h3>
                 <label
                   htmlFor="cg-json-upload"
                   className="block border-2 border-dashed border-[#2A2F3A] rounded-lg p-12 hover:border-primary/50 transition-colors cursor-pointer"
@@ -1497,18 +1562,18 @@ log = logging.getLogger("containerguard")`);
                       <UploadCloud className="w-8 h-8 text-primary" />
                     </div>
                     <div className="text-center">
-                      <p className="text-white mb-2">Drag and drop your JSON file here</p>
+                      <p className="text-white mb-2">Drag and drop your JSON or Python script here</p>
                       <p className="text-[#6B7280] text-sm mb-4">or</p>
                       <span className="inline-block px-6 py-2 bg-primary hover:bg-primary/90 text-white rounded-lg transition-colors pointer-events-auto">
                         Browse Files
                       </span>
                     </div>
-                    <p className="text-[#6B7280] text-xs">Supported format: .json (Max size: 10MB)</p>
+                    <p className="text-[#6B7280] text-xs">Supported formats: .json, .py (Max size: 10MB)</p>
                   </div>
                   <input
                     id="cg-json-upload"
                     type="file"
-                    accept="application/json,.json"
+                    accept="application/json,.json,.py,text/x-python"
                     className="hidden"
                     onChange={(e) => {
                       const file = e.target.files?.[0];
